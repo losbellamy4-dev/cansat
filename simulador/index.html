@@ -112,14 +112,19 @@
         <span class="clock"><span id="live-dot" class="live-dot" hidden></span><b id="k-time">0,0 s</b><small id="k-ts">TIMESTAMP 2350 ms</small></span>
       </div>
       <div class="cb-actions">
+        <div class="seg" role="group" aria-label="Vista">
+          <button type="button" data-mode="panel" aria-pressed="true">Panel de datos</button>
+          <button type="button" data-mode="anim" aria-pressed="false">Animación</button>
+        </div>
         <button type="button" id="btn-launch" class="btn btn-primary">Lanzar</button>
         <button type="button" id="btn-pause" class="btn" aria-pressed="false" disabled>Pausa</button>
         <button type="button" id="btn-instant" class="btn">Resultado instantáneo</button>
         <label class="speed" for="speed">Velocidad
           <select id="speed">
+            <option value="0.5">×0,5 lenta</option>
             <option value="1">×1 real</option>
-            <option value="2">×2</option>
-            <option value="5" selected>×5</option>
+            <option value="2" selected>×2</option>
+            <option value="5">×5</option>
             <option value="10">×10</option>
             <option value="20">×20</option>
           </select>
@@ -129,6 +134,44 @@
       <div class="progress" id="progress" aria-hidden="true"></div>
     </div>
   </div>
+
+  <section class="anim" id="anim" aria-labelledby="anim-title" hidden>
+    <div class="anim-stage">
+      <h2 id="anim-title" class="sr-only">Animación del vuelo</h2>
+      <canvas id="cv-scene" class="cv-scene" role="img" aria-label="Vista lateral del vuelo: ascenso del cohete, expulsión del CanSat y descenso en paracaídas con el viento"></canvas>
+      <button type="button" id="anim-play" class="btn btn-primary anim-play">Ver el vuelo</button>
+      <p class="anim-note">Vista lateral en la dirección del viento. Altura y distancia van a la misma escala; cohete, lata y paracaídas están agrandados. Los puntos rojos son paquetes que no llegaron a tierra. La bajada del cohete con su paracaídas es ilustrativa.</p>
+    </div>
+    <aside class="anim-data" aria-label="Datos en vivo">
+      <div class="ad-head">
+        <span class="phase-pill" id="a-phase" data-phase="PAD">En rampa</span>
+        <b id="a-tplus" class="ad-clock">T−10,0 s</b>
+      </div>
+      <h3 class="h-small">Estado real (modelo)</h3>
+      <dl class="ad-list">
+        <div><dt>Altura sobre la rampa</dt><dd id="a-h">—</dd></div>
+        <div><dt>Velocidad vertical</dt><dd id="a-v">—</dd></div>
+        <div><dt>Aceleración sentida</dt><dd id="a-g">—</dd></div>
+        <div><dt>Inclinación de la lata</dt><dd id="a-tilt">—</dd></div>
+        <div><dt>Paracaídas</dt><dd id="a-chute">—</dd></div>
+        <div><dt>Distancia a la rampa</dt><dd id="a-dist">—</dd></div>
+      </dl>
+      <h3 class="h-small">Última trama recibida</h3>
+      <dl class="ad-list">
+        <div><dt>Paquete</dt><dd><span id="a-pkt">—</span><small id="a-pkt-sub"></small></dd></div>
+        <div><dt>ALTITUDE</dt><dd id="a-alt">—</dd></div>
+        <div><dt>PRESSURE</dt><dd id="a-pres">—</dd></div>
+        <div><dt>TEMP</dt><dd id="a-temp">—</dd></div>
+        <div><dt>AZ</dt><dd id="a-az">—</dd></div>
+        <div><dt>GZ</dt><dd id="a-gz">—</dd></div>
+        <div><dt>Batería</dt><dd id="a-bat">—</dd></div>
+        <div><dt>GPS</dt><dd id="a-gps" data-state="ok">—</dd></div>
+      </dl>
+      <p class="ad-frame" id="a-frame">—</p>
+      <h3 class="h-small">Eventos</h3>
+      <ol class="ad-events" id="a-events"></ol>
+    </aside>
+  </section>
 
   <section class="kpis" aria-label="Lectura actual en la estación de tierra">
     <div class="kpi"><span class="k-label">Altitud</span><b id="k-alt">—</b><small id="k-alt-sub"></small></div>

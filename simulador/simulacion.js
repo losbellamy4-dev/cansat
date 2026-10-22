@@ -1042,9 +1042,10 @@
   const es = (x, n = 1) => (x === null || x === undefined || !Number.isFinite(x) ? '—' : x.toFixed(n).replace('.', ','));
 
   const ui = {
-    sim: null, gs: null, rxIdx: 0, playing: false, paused: false, speed: 5,
-    lastNow: 0, raf: 0, view: 'descent', logTab: 'rx',
-    charts: [], dirtyCharts: true, dirtyLog: true, lastChartDraw: 0, theme: null,
+    sim: null, gs: null, rxIdx: 0, playing: false, paused: false, speed: 2,
+    clock: 0, lastNow: 0, raf: 0, view: 'descent', logTab: 'rx', mode: 'panel',
+    charts: [], dirtyCharts: true, dirtyLog: true, lastChartDraw: 0, lastAnimData: 0, animEvents: -1, theme: null,
+    reducedMotion: typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   };
 
   /* Paleta leída de los tokens CSS (se relee al cambiar de tema). */
@@ -1055,6 +1056,9 @@
       panel: v('--panel'), ink: v('--ink'), ink2: v('--ink-2'), muted: v('--muted'), grid: v('--grid'), axis: v('--axis'),
       s1: v('--s1'), s2: v('--s2'), s3: v('--s3'), ref: v('--ref'), band: v('--band'), shade: v('--shade'),
       accent: v('--accent'), good: v('--good'), warn: v('--warn'), bad: v('--bad'), seg1: v('--seg-1'), seg2: v('--seg-2'),
+      line: v('--line'), accentSoft: v('--accent-soft'), accentInk: v('--accent-ink'),
+      skyTop: v('--sky-top'), skyBot: v('--sky-bot'), skyGrid: v('--sky-grid'), hill: v('--hill'), ground: v('--ground'),
+      streak: v('--streak'), smoke: v('--smoke'), rocket: v('--rocket'), can: v('--can'),
       mono: v('--font-mono') || 'monospace', body: v('--font-body') || 'sans-serif',
     };
   }
@@ -1459,6 +1463,397 @@
     }
   }
 
+  /* ─── Animación del vuelo: vista lateral en la dirección del viento ─── */
+  function downwindAxis(cfg) {
+    const to = (cfg.windFromDeg + 180) * DEG;
+    return [Math.cos(to), Math.sin(to)];
+  }
+
+  function truthAt(sim, t) {
+    const tr = sim.truth;
+    if (!tr.length) return null;
+    let lo = 0, hi = tr.length - 1;
+    if (t >= tr[hi].t) return tr[hi];
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (tr[mid].t <= t) lo = mid; else hi = mid; }
+    return tr[lo];
+  }
+
+  /* El cuerpo del cohete baja con su propio paracaídas a ~15 m/s.
+     Es una trayectoria ilustrativa: no forma parte del modelo físico. */
+  function rocketPose(sim, u) {
+    if (sim.tApogee === null) return { x: 0, h: sim.h, landed: false, chute: 0, after: false };
+    const tf = 1.2, vr = 15, tau = sim.t - sim.tApogee;
+    const hDrop = 0.5 * G * tf * tf;
+    const tLandR = tf + (sim.hApogee - hDrop) / vr;
+    const tt = Math.min(tau, tLandR);
+    const h = tt < tf ? sim.hApogee - 0.5 * G * tt * tt : sim.hApogee - hDrop - vr * (tt - tf);
+    const ref = truthAt(sim, sim.tApogee + tt);
+    const x = ref ? 0.9 * (ref.canN * u[0] + ref.canE * u[1]) : 0;
+    return { x, h: Math.max(0, h), landed: tau >= tLandR, chute: clamp((tau - 0.6) / 0.8, 0, 1), after: true };
+  }
+
+  /* Cohete con la tobera en (x, y); angle 0 = morro hacia arriba. */
+  function drawRocket(ctx, th, x, y, angle, flame, k) {
+    const L = 44 * k, W = 9 * k;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    if (flame > 0) {
+      const f = (12 + 12 * flame) * k;
+      ctx.fillStyle = th.warn;
+      ctx.beginPath(); ctx.moveTo(-W / 2 + k, 0); ctx.lineTo(0, f); ctx.lineTo(W / 2 - k, 0); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = th.accent;
+      ctx.beginPath(); ctx.moveTo(-W / 4, 0); ctx.lineTo(0, f * 0.6); ctx.lineTo(W / 4, 0); ctx.closePath(); ctx.fill();
+    }
+    ctx.fillStyle = th.ink2;
+    ctx.beginPath(); ctx.moveTo(-W / 2, -2 * k); ctx.lineTo(-W / 2 - 6 * k, 2 * k); ctx.lineTo(-W / 2, -13 * k); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(W / 2, -2 * k); ctx.lineTo(W / 2 + 6 * k, 2 * k); ctx.lineTo(W / 2, -13 * k); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = th.rocket; ctx.strokeStyle = th.ink2; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.rect(-W / 2, -L, W, L); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = th.accent;
+    ctx.fillRect(-W / 2, -L + 7 * k, W, 3 * k);   // bahía de carga del CanSat
+    ctx.fillStyle = th.rocket;
+    ctx.beginPath();
+    ctx.moveTo(-W / 2, -L);
+    ctx.quadraticCurveTo(-W / 2, -L - 10 * k, 0, -L - 16 * k);
+    ctx.quadraticCurveTo(W / 2, -L - 10 * k, W / 2, -L);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
+  /* Cúpula de paracaídas en (cx, cy) girada `ang`, con los cordones hasta (0, len) en ese marco. */
+  function drawCanopy(ctx, th, cx, cy, ang, rw, len, color, soft) {
+    const rh = rw * 0.62;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(ang);
+    ctx.strokeStyle = th.ink2; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const fx of [-1, -0.4, 0.4, 1]) { ctx.moveTo(fx * rw, 0); ctx.lineTo(0, len); }
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.ellipse(0, 0, rw, rh, 0, Math.PI, 2 * Math.PI); ctx.closePath(); ctx.fill();
+    if (soft) {
+      ctx.fillStyle = soft;
+      ctx.beginPath(); ctx.ellipse(0, 0, rw * 0.45, rh, 0, Math.PI, 2 * Math.PI); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.ellipse(0, 0, rw * 0.14, rh, 0, Math.PI, 2 * Math.PI); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /* Lata centrada en (x, y) girada `ang` (eje Z del cuerpo hacia abajo en ang = 0). */
+  function drawCan(ctx, th, x, y, ang, k) {
+    const H = 14 * k, W = 9 * k;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(ang);
+    ctx.strokeStyle = th.ink2; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(0, -H / 2); ctx.lineTo(0, -H / 2 - 5 * k); ctx.stroke();  // antena GPS arriba
+    ctx.fillStyle = th.can;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-W / 2, -H / 2, W, H, 2 * k); else ctx.rect(-W / 2, -H / 2, W, H);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = th.accent;
+    ctx.fillRect(-W / 2, -H * 0.12, W, H * 0.24);
+    ctx.restore();
+  }
+
+  /* Ángulo de pantalla de un vector NED proyectado sobre el plano vertical a favor del viento. */
+  function screenAngle(vec, u) {
+    return Math.atan2(-(vec[0] * u[0] + vec[1] * u[1]), vec[2]);
+  }
+
+  /* Lata con su paracaídas: el cordaje sigue el ángulo del péndulo del modelo. */
+  function drawCanSatAssembly(ctx, th, sim, u, x, y, k) {
+    const canAng = screenAngle(qRot(sim.q, [0, 0, 1]), u);
+    const H = 14 * k;
+    const landed = sim.phase === 'ATERRIZADO';
+    if (!landed && sim.phi > 0) {
+      const rAng = screenAngle(sim.riserDir(), u);
+      const ax = x + Math.sin(canAng) * (H / 2 + k), ay = y - Math.cos(canAng) * (H / 2 + k);  // anclaje en la tapa superior
+      const len = 34 * k;
+      const cx = ax + Math.sin(rAng) * len, cy = ay - Math.cos(rAng) * len;
+      drawCanopy(ctx, th, cx, cy, rAng, (4 + 14 * sim.phi) * k, len, th.accent, th.accentSoft);
+    }
+    if (landed) {
+      ctx.fillStyle = th.accent;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath(); ctx.ellipse(x + 24 * k, y + 2 * k, 15 * k, 3 * k, 0, 0, 2 * Math.PI); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = th.ink2; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x + 4 * k, y); ctx.lineTo(x + 10 * k, y + 2 * k); ctx.stroke();
+    }
+    drawCan(ctx, th, x, y, canAng, k);
+    if (landed && sim.buzzerOn) {
+      const ph = ui.reducedMotion ? 0.5 : (performance.now() / 700) % 1;
+      ctx.strokeStyle = th.ink2; ctx.lineWidth = 1.2;
+      for (let i = 0; i < 2; i++) {
+        const r = (10 + 8 * ((ph + i * 0.5) % 1)) * k;
+        ctx.globalAlpha = 1 - ((ph + i * 0.5) % 1);
+        ctx.beginPath(); ctx.arc(x, y, r, -Math.PI * 0.85, -Math.PI * 0.15); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawScene() {
+    const canvas = $('#cv-scene');
+    if (!canvas || ui.mode !== 'anim' || !ui.sim) return;
+    const th = ui.theme, sim = ui.sim, cfg = sim.cfg;
+    const { ctx, w, h } = setupCanvas(canvas);
+    const u = downwindAxis(cfg);
+    const xv = (n, e) => n * u[0] + e * u[1];
+    const now = performance.now() / 1000;
+
+    // Encuadre fijo para toda la misión: altura y distancia con la misma escala
+    const apo = Math.max(cfg.apogeeM, sim.hApogee || 0);
+    let drift = cfg.windMs * 1.6 * sim.derived.tDescent;
+    for (const r of sim.truth) drift = Math.max(drift, xv(r.canN, r.canE));
+    drift = Math.max(drift, 200);
+    const padL = 58, padR = 14, padT = 12, padB = 30;
+    const plotW = w - padL - padR, plotH = h - padT - padB;
+    const xMin = -0.12 * drift - 40;
+    const s = Math.min(plotW / (drift * 1.12 + 80), plotH / (apo * 1.1));
+    const xMax = xMin + plotW / s;
+    const X = (x) => padL + (x - xMin) * s;
+    const Y = (hh) => h - padB - hh * s;
+    const gy = Y(0);
+
+    // Cielo, colinas y suelo
+    const sky = ctx.createLinearGradient(0, 0, 0, gy);
+    sky.addColorStop(0, th.skyTop); sky.addColorStop(1, th.skyBot);
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, w, gy);
+    ctx.fillStyle = th.hill;
+    ctx.beginPath(); ctx.moveTo(0, gy);
+    for (let px = 0; px <= w + 8; px += 8) ctx.lineTo(px, gy - 9 - 6 * Math.sin(px / 61) - 4 * Math.sin(px / 23 + 1.3));
+    ctx.lineTo(w, gy); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = th.ground; ctx.fillRect(0, gy, w, h - gy);
+
+    // Regla de altura y distancia sobre el suelo
+    const hTop = (gy - padT) / s;
+    const hs = niceStep(hTop, 5);
+    ctx.font = `11px ${th.mono}`;
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (let v = 0; v <= hTop; v += hs) {
+      const yy = Math.round(Y(v)) + 0.5;
+      ctx.strokeStyle = th.skyGrid; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(w - padR, yy); ctx.stroke();
+      ctx.fillStyle = th.ink2; ctx.fillText(`${v} m`, padL - 6, yy);
+    }
+    const xs = niceStep(xMax - xMin, Math.max(3, Math.floor(plotW / 110)));
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (let v = Math.ceil(xMin / xs) * xs; v <= xMax; v += xs) {
+      const xx = Math.round(X(v)) + 0.5;
+      ctx.strokeStyle = th.ink2; ctx.beginPath(); ctx.moveTo(xx, gy); ctx.lineTo(xx, gy + 4); ctx.stroke();
+      ctx.fillStyle = th.ink2; ctx.fillText(`${v} m`, xx, gy + 8);
+    }
+
+    // Viento: trazos que avanzan con la velocidad del viento a cada altura
+    ctx.strokeStyle = th.streak; ctx.lineWidth = 1.5;
+    for (const frac of [0.12, 0.36, 0.6, 0.84]) {
+      const hh = apo * frac;
+      const ws = cfg.windMs * Math.min(Math.pow(Math.max(hh, 2) / 10, 1 / 7), 2);
+      if (ws < 0.2) continue;
+      const spacing = 150, len = 8 + ws * 2.5;
+      const off = ui.reducedMotion ? 40 * frac : (now * ws * 9 + frac * 97) % spacing;
+      ctx.beginPath();
+      for (let px = padL - spacing + off; px < w; px += spacing) { ctx.moveTo(px, Y(hh)); ctx.lineTo(px + len, Y(hh)); }
+      ctx.stroke();
+    }
+    ctx.fillStyle = th.ink2; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.font = `500 11px ${th.body}`;
+    ctx.fillText(`Viento → ${es(cfg.windMs, 0)} m/s a 10 m, desde ${Math.round(cfg.windFromDeg)}°`, padL + 6, padT + 2);
+
+    // Rampa
+    ctx.strokeStyle = th.ink2; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X(0) - 8, gy); ctx.lineTo(X(0) - 8, gy - 66); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(0) - 18, gy); ctx.lineTo(X(0) - 8, gy - 14); ctx.lineTo(X(0) + 2, gy); ctx.stroke();
+
+    // Estela de humo del motor (solo mientras quema) y trayectoria del ascenso
+    const hBurn = 0.5 * sim.aBoost * MODEL.tBurn * MODEL.tBurn;
+    if (sim.phase !== 'PAD') {
+      const top = sim.tApogee === null ? sim.h : sim.hApogee;
+      const fade = sim.t < sim.tBurnout ? 1 : clamp(1 - (sim.t - sim.tBurnout) / 40, 0.2, 1);
+      ctx.globalAlpha = 0.5 * fade;
+      ctx.strokeStyle = th.smoke; ctx.lineWidth = 7; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(X(0), gy); ctx.lineTo(X(0), Y(Math.min(top, hBurn))); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.setLineDash([2, 4]); ctx.strokeStyle = th.ref; ctx.lineWidth = 1.2; ctx.lineCap = 'butt';
+      ctx.beginPath(); ctx.moveTo(X(0), gy); ctx.lineTo(X(0), Y(top)); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Trayectoria de la lata y paquetes que no llegaron a tierra
+    if (sim.tApogee !== null) {
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = th.s1; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let first = true;
+      for (const r of sim.truth) {
+        if (r.t < sim.tApogee) continue;
+        const px = X(xv(r.canN, r.canE)), py = Y(r.h);
+        if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+      }
+      ctx.lineTo(X(xv(sim.canN, sim.canE)), Y(sim.h));
+      ctx.stroke(); ctx.setLineDash([]);
+    }
+    for (let i = 0; i < ui.rxIdx; i++) {
+      const e = sim.rx[i];
+      if (e.status === 'ok') continue;
+      const r = sim.truth[e.k - 1];
+      if (!r) continue;
+      ctx.fillStyle = e.status === 'corrupt' ? th.warn : th.bad;
+      ctx.beginPath(); ctx.arc(X(xv(r.canN, r.canE)), Y(r.h), 2.5, 0, 2 * Math.PI); ctx.fill();
+    }
+
+    // Cohete
+    const rp = rocketPose(sim, u);
+    const burning = sim.phase === 'ASCENSO' && sim.t - sim.tLaunch <= MODEL.tBurn;
+    const flame = burning ? (ui.reducedMotion ? 0.6 : 0.55 + 0.45 * Math.sin(now * 47)) : 0;
+    if (!rp.after) {
+      drawRocket(ctx, th, X(0), Y(rp.h), 0, flame, 1);
+    } else if (rp.landed) {
+      drawRocket(ctx, th, X(rp.x) - 22, gy - 5, Math.PI / 2, 0, 1);
+    } else {
+      const rx = X(rp.x), ry = Y(rp.h);
+      if (rp.chute > 0) drawCanopy(ctx, th, rx, ry - 34, 0, 4 + 8 * rp.chute, 28, th.ref, null);
+      drawRocket(ctx, th, rx - 20, ry + 2, Math.PI * 0.42, 0, 0.9);
+    }
+    if (rp.after && !rp.landed) {
+      ctx.fillStyle = th.ink2; ctx.font = `11px ${th.body}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('cohete', X(rp.x) + 44, Y(rp.h) - 8);
+    }
+
+    // CanSat
+    const canX = X(xv(sim.canN, sim.canE));
+    const canY = sim.phase === 'ATERRIZADO' ? gy - 5 : Y(sim.h);
+    if (sim.tApogee !== null) {
+      drawCanSatAssembly(ctx, th, sim, u, canX, canY, 1);
+      ctx.fillStyle = th.ink; ctx.font = `600 11px ${th.body}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText('CanSat', canX + 12, canY + (sim.phase === 'ATERRIZADO' ? -16 : 0));
+    }
+
+    // Marca de altura actual en la regla
+    const curH = sim.h;
+    const curY = sim.tApogee === null ? Y(curH) : canY;
+    {
+      const label = `${Math.round(curH)} m`;
+      ctx.font = `500 11px ${th.mono}`;
+      const tw = ctx.measureText(label).width + 10;
+      ctx.setLineDash([3, 3]); ctx.strokeStyle = th.accent; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(padL, curY); ctx.lineTo(sim.tApogee === null ? X(0) - 12 : canX - 10, curY); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = th.accent;
+      const bx = padL - tw - 2, by = clamp(curY - 9, 2, h - 20);
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, tw, 18, 4); ctx.fill(); } else ctx.fillRect(bx, by, tw, 18);
+      ctx.fillStyle = th.accentInk; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(label, bx + tw / 2, by + 9);
+    }
+
+    // Cuenta atrás en rampa
+    if (sim.phase === 'PAD') {
+      ctx.fillStyle = th.ink; ctx.font = `600 13px ${th.mono}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillText(`T−${es(sim.tLaunch - sim.t, 1)} s`, X(0) + 14, gy - 40);
+    }
+
+    // Detalle ampliado de la lata (escritorio)
+    if (w >= 560) {
+      const bw = 168, bh = 200, bx = w - padR - bw, by = padT + 22;
+      ctx.fillStyle = th.panel; ctx.globalAlpha = 0.92;
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.fill(); } else ctx.fillRect(bx, by, bw, bh);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = th.line; ctx.lineWidth = 1;
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx + 0.5, by + 0.5, bw - 1, bh - 1, 10); ctx.stroke(); }
+      ctx.fillStyle = th.ink2; ctx.font = `600 10px ${th.body}`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      ctx.fillText('DETALLE DE LA LATA', bx + 10, by + 9);
+      const cx = bx + bw / 2;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(bx, by + 22, bw, bh - 44); ctx.clip();
+      let caption;
+      if (sim.tApogee === null) {
+        drawRocket(ctx, th, cx, by + bh - 34, 0, flame, 2);
+        caption = 'Va dentro del cohete';
+      } else if (sim.phase === 'ATERRIZADO') {
+        ctx.fillStyle = th.ground; ctx.fillRect(bx, by + bh - 62, bw, 40);
+        drawCanSatAssembly(ctx, th, sim, u, cx - 14, by + bh - 72, 2.2);
+        caption = sim.buzzerOn ? 'En el suelo · zumbador' : 'En el suelo';
+      } else {
+        const ay = by + bh - 62;
+        ctx.setLineDash([2, 3]); ctx.strokeStyle = th.axis;
+        ctx.beginPath(); ctx.moveTo(cx, by + 24); ctx.lineTo(cx, by + bh - 24); ctx.stroke();
+        ctx.setLineDash([]);
+        drawCanSatAssembly(ctx, th, sim, u, cx, ay, 1.8);
+        caption = sim.phi <= 0 ? 'Caída libre' : `Inclinación ${es(sim.tiltDeg(), 1)}°`;
+      }
+      ctx.restore();
+      ctx.fillStyle = th.ink; ctx.font = `500 11px ${th.mono}`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+      ctx.fillText(caption, cx, by + bh - 8);
+    }
+  }
+
+  function renderAnimData(force) {
+    if (ui.mode !== 'anim' || !ui.sim) return;
+    const nowMs = performance.now();
+    if (!force && nowMs - ui.lastAnimData < 100) return;
+    ui.lastAnimData = nowMs;
+    const sim = ui.sim, gs = ui.gs, r = gs.last;
+    const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+    const tRel = sim.t - sim.tLaunch;
+    set('a-tplus', `${tRel < 0 ? 'T−' : 'T+'}${es(Math.abs(tRel), 1)} s`);
+    const pill = $('#a-phase');
+    pill.textContent = PHASES[sim.phase];
+    pill.dataset.phase = sim.phase;
+    set('a-h', `${es(sim.h, 1)} m`);
+    set('a-v', Math.abs(sim.v) < 0.05 ? '0,0 m/s' : `${es(Math.abs(sim.v), 1)} m/s ${sim.v > 0 ? 'bajando' : 'subiendo'}`);
+    set('a-g', `${es(Math.hypot(sim.aW[0], sim.aW[1], sim.aW[2] - G) / G, 2)} g`);
+    const inside = sim.phase === 'PAD' || sim.phase === 'ASCENSO';
+    set('a-tilt', inside ? 'dentro del cohete' : `${es(sim.tiltDeg(), 1)}°`);
+    set('a-chute', sim.tApogee === null ? 'plegado' : sim.phase === 'ATERRIZADO' ? 'en el suelo'
+      : sim.phi <= 0 ? 'desplegándose' : sim.phi < 1 ? `inflándose (${Math.round(sim.phi * 100)} %)` : 'abierto');
+    set('a-dist', `${Math.round(Math.hypot(sim.canN, sim.canE))} m`);
+    set('a-pkt', r ? `#${r.PACKET_COUNT}` : '—');
+    set('a-pkt-sub', `${gs.stats.ok} recibidos · ${gs.stats.lost} perdidos · ${gs.stats.corrupt} corruptos`);
+    set('a-alt', r ? `${es(r.ALTITUDE, 1)} m` : '—');
+    set('a-pres', r ? `${es(r.PRESSURE, 2)} hPa` : '—');
+    set('a-temp', r ? `${es(r.TEMP, 1)} °C` : '—');
+    set('a-az', r ? `${es(r.AZ, 2)} m/s²` : '—');
+    set('a-gz', r ? `${es(r.GZ, 1)} °/s` : '—');
+    set('a-bat', r ? `${es(r.V_BAT, 3)} V · ${es(r.I_DRAW, 0)} mA` : '—');
+    set('a-gps', r ? `${r.FIX_FLAG ? 'Fix' : 'Sin fix'} · ${r.SATS} sat.` : '—');
+    $('#a-gps').dataset.state = r && r.FIX_FLAG === 0 ? 'warn' : 'ok';
+    const raw = gs.rawLines.length ? gs.rawLines[gs.rawLines.length - 1].replace(/\n$/, '') : '—';
+    set('a-frame', raw);
+    if (ui.animEvents !== sim.events.length) {
+      ui.animEvents = sim.events.length;
+      const ol = $('#a-events');
+      ol.textContent = '';
+      for (const e of sim.events) {
+        const li = document.createElement('li');
+        const tt = document.createElement('b');
+        const dt = e.t - sim.tLaunch;
+        tt.textContent = `${dt < 0 ? 'T−' : 'T+'}${es(Math.abs(dt), 1)} s`;
+        const lab = document.createElement('span');
+        lab.textContent = e.label;
+        li.append(tt, lab);
+        ol.append(li);
+      }
+    }
+  }
+
+  function setMode(mode, fromUser) {
+    ui.mode = mode === 'anim' ? 'anim' : 'panel';
+    $('#anim').hidden = ui.mode !== 'anim';
+    $('.kpis').hidden = ui.mode === 'anim';
+    $$('[data-mode]').forEach((x) => x.setAttribute('aria-pressed', x.dataset.mode === ui.mode ? 'true' : 'false'));
+    try { localStorage.setItem('cansat-vista', ui.mode); } catch (err) { /* sin almacenamiento: solo no se recuerda la vista */ }
+    if (ui.mode === 'anim') {
+      ui.animEvents = -1;
+      if (fromUser && ui.sim.done && !ui.playing) { newRun(); renderAll(true); play(); }
+      else { drawScene(); renderAnimData(true); }
+    }
+    updateButtons();
+  }
+
   /* ─── Paneles de texto ─── */
   function renderDerived() {
     const cfg = normalizeConfig(readConfig());
@@ -1595,6 +1990,7 @@
   }
 
   function drawAll(force) {
+    drawScene();   // la animación se pinta en cada fotograma; las gráficas, como mucho cada 60 ms
     const now = performance.now();
     if (!force && now - ui.lastChartDraw < 60) return;
     ui.lastChartDraw = now;
@@ -1608,6 +2004,7 @@
     drawAll(force);
     if (ui.dirtyLog) { renderLog(); ui.dirtyLog = false; }
     renderValidation();
+    renderAnimData(force);
     updateButtons();
   }
 
@@ -1645,7 +2042,8 @@
     if (!ui.playing || ui.paused) return;
     const dtReal = Math.min(0.25, (now - ui.lastNow) / 1000);
     ui.lastNow = now;
-    ui.sim.advanceTo(ui.sim.t + dtReal * ui.speed);
+    ui.clock += dtReal * ui.speed;
+    ui.sim.advanceTo(ui.clock);
     pumpRx(ui.sim.done);
     if (ui.sim.done) { ui.playing = false; renderAll(true); renderSample(); return; }
     renderAll(false);
@@ -1654,6 +2052,7 @@
 
   function play() {
     ui.playing = true; ui.paused = false;
+    ui.clock = ui.sim.t;
     ui.lastNow = performance.now();
     ui.raf = requestAnimationFrame(tick);
     updateButtons();
@@ -1665,6 +2064,9 @@
     pause.textContent = ui.paused ? 'Continuar' : 'Pausa';
     pause.setAttribute('aria-pressed', ui.paused ? 'true' : 'false');
     $('#live-dot').hidden = !(ui.playing && !ui.paused);
+    const ap = $('#anim-play');
+    ap.hidden = ui.playing && !ui.paused;
+    ap.textContent = ui.paused ? 'Continuar' : 'Ver el vuelo';
   }
 
   async function copyText(text, btn) {
@@ -1701,7 +2103,12 @@
       finishInstant();
     });
     $('#speed').addEventListener('change', (e) => { ui.speed = Number(e.target.value) || 1; });
-    ui.speed = Number($('#speed').value) || 5;
+    ui.speed = Number($('#speed').value) || 2;
+    $$('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode, true)));
+    $('#anim-play').addEventListener('click', () => {
+      if (ui.playing && ui.paused) play();
+      else { newRun(); renderAll(true); play(); }
+    });
 
     $$('[data-view]').forEach((b) => b.addEventListener('click', () => {
       ui.view = b.dataset.view;
@@ -1730,6 +2137,9 @@
     // Estado inicial: una misión completa con los supuestos por defecto
     newRun();
     finishInstant();
+    let saved = null;
+    try { saved = localStorage.getItem('cansat-vista'); } catch (err) { /* sin almacenamiento */ }
+    if (saved === 'anim') setMode('anim', false);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initUI);
