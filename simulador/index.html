@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simulador de descenso CanSat</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Banco de pruebas del software de un CanSat: física de descenso, sensores, trama CSV, radio, estación de tierra y validación.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+
+<header class="brief">
+  <div class="wrap brief-inner">
+    <div class="brief-text">
+      <p class="eyebrow">Desafío CanSat ESA · Fase regional de Andalucía · Sevilla</p>
+      <h1>Simulador de descenso CanSat</h1>
+      <p class="lead">Soy tu mentor para el Desafío CanSat. Tengo asimilados la trama primaria, las tres misiones secundarias (A, IMU y actitud; B, energía y supervivencia; C, GPS con pérdidas de fix) y el motor físico que las gobierna: arrastre con densidad variable, atmósfera ISA y fórmula barométrica con su inversa.</p>
+      <p>Esta página es el banco de pruebas del software antes de montar el hardware. Cada valor sale de esas ecuaciones y la semilla hace que cada ejecución se pueda repetir byte a byte. Revisa los supuestos, lanza la misión en tiempo real o acelerada y comprueba los cinco criterios de validación.</p>
+    </div>
+    <aside class="frame-card" aria-labelledby="frame-title">
+      <p class="card-label" id="frame-title">Trama CSV · 23 campos · terminada en \n</p>
+      <dl class="frame-groups">
+        <div><dt>Primaria</dt><dd>TEAM_ID · PACKET_COUNT · TIMESTAMP · TEMP · PRESSURE · ALTITUDE</dd></div>
+        <div><dt>Misión A</dt><dd>AX · AY · AZ · GX · GY · GZ · MX · MY · MZ</dd></div>
+        <div><dt>Misión B</dt><dd>V_BAT · I_DRAW · TEMP_CPU</dd></div>
+        <div><dt>Misión C</dt><dd>LAT · LON · GPS_ALT · SATS · FIX_FLAG</dd></div>
+      </dl>
+      <p class="card-label">Trama real de esta simulación, a mitad de descenso</p>
+      <p class="sample" id="sample-line">—</p>
+      <p class="sample-meta"><span id="sample-bytes">—</span> · campo sin dato = −999</p>
+    </aside>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="params" aria-labelledby="params-title">
+    <div class="section-head">
+      <h2 id="params-title">Supuestos de partida</h2>
+      <p>Son los valores con los que trabajo mientras no me digas otros. Cámbialos y pulsa <b>Lanzar</b> o <b>Resultado instantáneo</b> para aplicarlos.</p>
+    </div>
+    <div class="params-grid">
+      <form id="cfg" class="cfg" autocomplete="off">
+        <fieldset>
+          <legend>Vehículo y paracaídas</legend>
+          <label for="f-mass">Masa <span class="field"><input id="f-mass" name="massG" type="number" step="1" min="150" max="600" value="330"><i>g</i></span></label>
+          <label for="f-cd">Cd del paracaídas <span class="field"><input id="f-cd" name="cd" type="number" step="0.05" min="0.3" max="2" value="1.0"><i>—</i></span></label>
+          <label for="f-chute">Diámetro proyectado <span class="field"><input id="f-chute" name="chuteCm" type="number" step="0.1" min="10" max="120" value="28.8"><i>cm</i></span></label>
+          <label for="f-riser">Cordaje paracaídas–lata <span class="field"><input id="f-riser" name="riserM" type="number" step="0.05" min="0.2" max="3" value="0.8"><i>m</i></span></label>
+        </fieldset>
+        <fieldset>
+          <legend>Atmósfera del día</legend>
+          <label for="f-t0">T0 en la rampa <span class="field"><input id="f-t0" name="T0C" type="number" step="0.5" min="-20" max="45" value="22"><i>°C</i></span></label>
+          <label for="f-p0">P0 en la rampa (QFE) <span class="field"><input id="f-p0" name="P0hPa" type="number" step="0.1" min="900" max="1060" value="1015.0"><i>hPa</i></span></label>
+          <label for="f-apo">Apogeo <span class="field"><input id="f-apo" name="apogeeM" type="number" step="10" min="200" max="3000" value="1000"><i>m</i></span></label>
+          <label for="f-lapse">Gradiente térmico real <span class="field"><input id="f-lapse" name="lapseKkm" type="number" step="0.1" min="-5" max="9.8" value="6.5"><i>K/km</i></span></label>
+        </fieldset>
+        <fieldset>
+          <legend>Viento</legend>
+          <label for="f-wind">Velocidad a 10 m <span class="field"><input id="f-wind" name="windMs" type="number" step="0.5" min="0" max="20" value="4"><i>m/s</i></span></label>
+          <label for="f-wdir">Procedencia <span class="field"><input id="f-wdir" name="windFromDeg" type="number" step="5" min="0" max="359" value="250"><i>°</i></span></label>
+        </fieldset>
+        <fieldset>
+          <legend>Telemetría</legend>
+          <label for="f-team">TEAM_ID <span class="field"><input id="f-team" name="teamId" type="text" maxlength="12" value="SEV01" spellcheck="false"></span></label>
+          <label for="f-rate">Frecuencia de trama <span class="field"><select id="f-rate" name="rateHz"><option value="1">1 Hz</option><option value="2">2 Hz</option><option value="3">3 Hz</option><option value="4">4 Hz</option><option value="5" selected>5 Hz</option></select></span></label>
+          <label for="f-baud">Velocidad de la radio <span class="field"><select id="f-baud" name="baud"><option value="1200">1200 bit/s</option><option value="2400">2400 bit/s</option><option value="4800">4800 bit/s</option><option value="9600" selected>9600 bit/s</option><option value="19200">19200 bit/s</option></select></span></label>
+          <label for="f-loss">Pérdida media en vuelo <span class="field"><input id="f-loss" name="lossPct" type="number" step="0.5" min="0" max="60" value="3"><i>%</i></span></label>
+          <label for="f-seed">Semilla <span class="field"><input id="f-seed" name="seed" type="number" step="1" min="0" value="42"><i>#</i></span></label>
+        </fieldset>
+        <details class="advanced">
+          <summary>Más supuestos: batería, GPS, coordenadas y fallos</summary>
+          <fieldset>
+            <legend class="sr-only">Supuestos avanzados</legend>
+            <label for="f-gps">Actualización del GPS <span class="field"><select id="f-gps" name="gpsHz"><option value="1">1 Hz</option><option value="5" selected>5 Hz</option><option value="10">10 Hz</option></select></span></label>
+            <label for="f-bat">Batería LiPo 1S <span class="field"><input id="f-bat" name="batteryMah" type="number" step="50" min="100" max="5000" value="600"><i>mAh</i></span></label>
+            <label for="f-wait">Encendida en rampa antes <span class="field"><input id="f-wait" name="padWaitMin" type="number" step="5" min="0" max="180" value="0"><i>min</i></span></label>
+            <label for="f-lat">Latitud de la rampa <span class="field"><input id="f-lat" name="lat0" type="number" step="0.0001" value="37.3891"><i>°</i></span></label>
+            <label for="f-lon">Longitud de la rampa <span class="field"><input id="f-lon" name="lon0" type="number" step="0.0001" value="-5.9845"><i>°</i></span></label>
+            <label for="f-elev">Elevación de la rampa <span class="field"><input id="f-elev" name="elevM" type="number" step="1" value="10"><i>m</i></span></label>
+            <label class="check" for="f-faults"><input id="f-faults" name="faults" type="checkbox"> Inyectar fallos de sensor: el BMP280 calla 3 s y la IMU 2 s durante el descenso</label>
+          </fieldset>
+        </details>
+      </form>
+
+      <aside class="derived" aria-labelledby="derived-title">
+        <h3 id="derived-title">Lo que implican</h3>
+        <dl>
+          <div><dt>Área del paracaídas A</dt><dd id="d-area">—</dd></div>
+          <div><dt>Arrastre total Cd·A + lata</dt><dd id="d-cda">—</dd></div>
+          <div><dt>ρ en el apogeo / en la rampa</dt><dd id="d-rho">—</dd></div>
+          <div><dt>v terminal apogeo → rampa</dt><dd id="d-vt" data-state="ok">—</dd></div>
+          <div><dt>Exponente g·M/(R·L)</dt><dd id="d-exp">—</dd></div>
+          <div><dt>Descenso estimado</dt><dd id="d-tdesc">—</dd></div>
+          <div><dt>Frecuencia del péndulo</dt><dd id="d-swing">—</dd></div>
+          <div><dt>Trama y ocupación de la radio</dt><dd id="d-link" data-state="ok">—</dd></div>
+          <div><dt>Motor del cohete (supuesto)</dt><dd id="d-boost">—</dd></div>
+        </dl>
+        <p class="fineprint">Fijos en el modelo: Cd de la lata 0,8 sobre 34 cm², sonda de temperatura con τ ≈ 3 s, barómetro σ = 1,5 Pa, IMU ±16 g y ±2000 °/s, campo magnético de Sevilla ≈ 27 µT horizontal y 34 µT vertical, radio de 100 mW (100 mA en transmisión).</p>
+      </aside>
+    </div>
+  </section>
+
+  <div class="controlbar" role="region" aria-label="Control de la simulación">
+    <div class="cb-inner">
+      <div class="cb-status">
+        <span class="phase-pill" id="k-phase" data-phase="PAD">En rampa</span>
+        <span class="clock"><span id="live-dot" class="live-dot" hidden></span><b id="k-time">0,0 s</b><small id="k-ts">TIMESTAMP 2350 ms</small></span>
+      </div>
+      <div class="cb-actions">
+        <button type="button" id="btn-launch" class="btn btn-primary">Lanzar</button>
+        <button type="button" id="btn-pause" class="btn" aria-pressed="false" disabled>Pausa</button>
+        <button type="button" id="btn-instant" class="btn">Resultado instantáneo</button>
+        <label class="speed" for="speed">Velocidad
+          <select id="speed">
+            <option value="1">×1 real</option>
+            <option value="2">×2</option>
+            <option value="5" selected>×5</option>
+            <option value="10">×10</option>
+            <option value="20">×20</option>
+          </select>
+        </label>
+      </div>
+      <p class="pending" id="pending-note" hidden>Has cambiado supuestos: se aplicarán en la próxima ejecución.</p>
+      <div class="progress" id="progress" aria-hidden="true"></div>
+    </div>
+  </div>
+
+  <section class="kpis" aria-label="Lectura actual en la estación de tierra">
+    <div class="kpi"><span class="k-label">Altitud</span><b id="k-alt">—</b><small id="k-alt-sub"></small></div>
+    <div class="kpi"><span class="k-label">Velocidad vertical</span><b id="k-vel">—</b><small id="k-vel-sub"></small></div>
+    <div class="kpi"><span class="k-label">Presión</span><b id="k-pres">—</b><small>BMP280</small></div>
+    <div class="kpi"><span class="k-label">Temperatura</span><b id="k-temp">—</b><small id="k-temp-sub"></small></div>
+    <div class="kpi"><span class="k-label">Paquetes recibidos</span><b id="k-pkt">—</b><small id="k-pkt-sub"></small></div>
+    <div class="kpi"><span class="k-label">GPS</span><b id="k-gps" data-state="ok">—</b><small id="k-gps-sub"></small></div>
+    <div class="kpi"><span class="k-label">Batería</span><b id="k-bat">—</b><small id="k-bat-sub"></small></div>
+  </section>
+
+  <section class="timeline" aria-labelledby="tl-title">
+    <div class="tl-head">
+      <h2 id="tl-title" class="h-small">Línea de tiempo de la misión</h2>
+      <ul class="tl-legend">
+        <li><i class="sw sw-good"></i>GPS con fix</li>
+        <li><i class="sw sw-warn"></i>Sin fix</li>
+        <li><i class="sw sw-tick"></i>Paquete recibido</li>
+        <li><i class="sw sw-bad"></i>Perdido</li>
+        <li><i class="sw sw-warnline"></i>Corrupto</li>
+      </ul>
+    </div>
+    <canvas id="cv-timeline" class="cv-timeline" role="img" aria-label="Fases de vuelo, estado del GPS y paquetes de radio a lo largo de la misión"></canvas>
+  </section>
+
+  <div class="view-switch" role="group" aria-label="Rango temporal de las gráficas">
+    <span>Gráficas:</span>
+    <button type="button" data-view="descent" aria-pressed="true">Solo descenso</button>
+    <button type="button" data-view="full" aria-pressed="false">Misión completa</button>
+    <span class="hint">Lo que ve la estación de tierra; la línea discontinua es el modelo. Eje: segundos desde el arranque (TIMESTAMP).</span>
+  </div>
+
+  <section class="group" aria-labelledby="g1">
+    <h2 id="g1"><span class="tag">Primaria</span> Barometría y temperatura</h2>
+    <div class="charts">
+      <figure class="chart chart-wide" data-chart="alt">
+        <figcaption><h3>Altitud</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Altitud barométrica, GPS y del modelo frente al tiempo"></canvas>
+      </figure>
+      <figure class="chart" data-chart="vel">
+        <figcaption><h3>Velocidad de descenso</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Velocidad vertical derivada de la altitud frente a la banda objetivo de 8 a 11 m/s"></canvas>
+      </figure>
+      <figure class="chart" data-chart="pres">
+        <figcaption><h3>Presión</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Presión atmosférica frente al tiempo"></canvas>
+      </figure>
+      <figure class="chart" data-chart="temp">
+        <figcaption><h3>Temperatura externa</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Temperatura de la sonda y del aire frente al tiempo"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <section class="group" aria-labelledby="g2">
+    <h2 id="g2"><span class="tag">Misión A</span> IMU y control de actitud</h2>
+    <div class="charts charts-3">
+      <figure class="chart" data-chart="acc">
+        <figcaption><h3>Acelerómetro</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Aceleraciones AX, AY y AZ"></canvas>
+      </figure>
+      <figure class="chart" data-chart="gyr">
+        <figcaption><h3>Giróscopo</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Velocidades angulares GX, GY y GZ"></canvas>
+      </figure>
+      <figure class="chart" data-chart="mag">
+        <figcaption><h3>Magnetómetro</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Campo magnético MX, MY y MZ"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <section class="group" aria-labelledby="g3">
+    <h2 id="g3"><span class="tag">Misión B</span> Supervivencia y energía</h2>
+    <div class="charts charts-3">
+      <figure class="chart" data-chart="vbat">
+        <figcaption><h3>Tensión de batería</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Tensión de la batería frente al tiempo"></canvas>
+      </figure>
+      <figure class="chart" data-chart="idraw">
+        <figcaption><h3>Consumo medio por periodo</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Corriente consumida frente al tiempo"></canvas>
+      </figure>
+      <figure class="chart" data-chart="tcpu">
+        <figcaption><h3>Temperatura de la CPU</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Temperatura de la CPU y del aire frente al tiempo"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <section class="group" aria-labelledby="g4">
+    <h2 id="g4"><span class="tag">Misión C</span> GPS y pérdidas de fix</h2>
+    <div class="charts charts-gps">
+      <figure class="chart chart-map">
+        <figcaption><h3>Deriva en planta</h3>
+          <ul class="legend">
+            <li><i class="key" style="--c: var(--s1)"></i><span>GPS recibido</span></li>
+            <li><i class="key key-dash" style="--c: var(--ref)"></i><span>Modelo</span></li>
+            <li><i class="ring"></i><span>Posición congelada sin fix</span></li>
+          </ul>
+        </figcaption>
+        <canvas id="cv-map" class="cv-map" role="img" aria-label="Trayectoria horizontal de la lata desde la rampa"></canvas>
+        <p class="map-caption" id="map-caption">—</p>
+      </figure>
+      <figure class="chart" data-chart="sats">
+        <figcaption><h3>Satélites (sombreado: sin fix)</h3><ul class="legend"></ul></figcaption>
+        <canvas role="img" aria-label="Número de satélites y ventanas sin fix"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <section class="split" aria-label="Validación y registro de tramas">
+    <div class="validation">
+      <div class="section-head">
+        <h2>Criterios de validación</h2>
+        <p class="val-summary" id="val-summary" data-state="pending">—</p>
+      </div>
+      <ol class="val-list" id="val-list"></ol>
+      <h3 class="h-small">Comprobaciones adicionales</h3>
+      <ul class="val-list val-info" id="val-info"></ul>
+    </div>
+    <div class="console">
+      <div class="console-head">
+        <div class="tabs" role="tablist" aria-label="Registro">
+          <button type="button" role="tab" data-tab="rx" aria-selected="true">Recepción en tierra</button>
+          <button type="button" role="tab" data-tab="sd" aria-selected="false">MicroSD a bordo</button>
+        </div>
+        <div class="console-actions">
+          <button type="button" class="btn btn-small" id="copy-sd">Copiar CSV de la SD</button>
+          <button type="button" class="btn btn-small" id="copy-rx">Copiar lo recibido</button>
+        </div>
+      </div>
+      <div class="log" id="log" role="log" aria-live="off" tabindex="0"></div>
+      <p class="log-count" id="log-count">—</p>
+      <textarea id="copy-fallback" class="copy-fallback" rows="4" hidden aria-label="Texto para copiar"></textarea>
+    </div>
+  </section>
+
+  <section class="physics" aria-labelledby="phys-title">
+    <div class="section-head">
+      <h2 id="phys-title">Por qué evolucionan así los valores</h2>
+      <p>Las ecuaciones que mueven cada columna de la trama, con los números de los supuestos actuales.</p>
+    </div>
+    <div class="phys-grid">
+      <article>
+        <h3>Presión</h3>
+        <p>Al bajar tienes más aire encima: dp/dh = −ρ·g. Cerca del suelo son unos 0,12 hPa por metro, así que a 9 m/s la presión sube alrededor de 1 hPa cada segundo. Durante el descenso solo puede bajar por ruido del sensor, y el ruido del BMP280 (σ ≈ 1,5 Pa) es más de diez veces menor que el salto entre dos tramas a 5 Hz.</p>
+        <p class="eq">p(h) = P0 · (1 − L·h/T0)^5,2576</p>
+      </article>
+      <article>
+        <h3>Altitud</h3>
+        <p>El firmware no mide altitud: la calcula invirtiendo la fórmula con P0 y T0 promediados en la rampa (32 muestras al arrancar). Por eso ALTITUDE es altura sobre la rampa, no sobre el mar. El error que importa no es el ruido sino suponer 6,5 K/km cuando el día tiene otro gradiente: con 9,8 K/km el error en el apogeo supera los 5 m.</p>
+        <p class="eq">h = (T0/L) · (1 − (p/P0)^(1/5,2576))</p>
+      </article>
+      <article>
+        <h3>Temperatura</h3>
+        <p>La atmósfera pierde 6,5 °C por kilómetro, así que al descender 1000 m la sonda sube unos 6,5 °C. Dentro del cohete la sonda apenas ve el aire (τ ≈ 30 s); al salir responde en unos 3 s, por eso su curva va ligeramente retrasada respecto a la del aire.</p>
+        <p class="eq">T(h) = T0 − 0,0065·h</p>
+      </article>
+      <article>
+        <h3>Velocidad</h3>
+        <p>Cuando el arrastre iguala al peso la aceleración se anula. Como ρ aumenta al bajar, la velocidad terminal cae poco a poco durante todo el descenso: de <b data-live="vtTop">—</b> m/s en el apogeo a <b data-live="vtGround">—</b> m/s en la rampa. Duración estimada: <b data-live="tDesc">—</b> s.</p>
+        <p class="eq">v<sub>t</sub> = √(2·m·g / (ρ·Cd·A))</p>
+      </article>
+      <article>
+        <h3>IMU</h3>
+        <p>Recién expulsada, la lata cae libre y el acelerómetro marca casi 0 g. Con el paracaídas abierto mide la tensión del cordaje: AZ ≈ −g (eje Z hacia abajo). En un péndulo esa fuerza siempre va a lo largo del cordaje, así que AX y AY casi no cambian aunque la lata se balancee: el acelerómetro solo no mide la inclinación y necesitarás fusionar giróscopo y magnetómetro (Madgwick o Mahony). GX y GY oscilan a <b data-live="fSwing">—</b> Hz, la frecuencia del péndulo; GZ es el giro del paracaídas. El magnetómetro ve el campo terrestre girar con la lata, desplazado por el hard-iron de la batería, que tendrás que calibrar.</p>
+        <p class="eq">f = √(g/L) / 2π</p>
+      </article>
+      <article>
+        <h3>Energía</h3>
+        <p>La batería sigue un modelo de Thévenin: tensión en vacío según el estado de carga, menos la caída en la resistencia interna y en la red RC. I_DRAW es la corriente media de cada periodo: sube cuanto más tiempo pasa el transmisor emitiendo (más Hz, más consumo), cuando el GPS busca satélites y con el zumbador de recuperación tras aterrizar. TEMP_CPU se calienta despacio por encima del aire (τ ≈ 150 s).</p>
+        <p class="eq">V = OCV(SoC) − I·R0 − V<sub>RC</sub></p>
+      </article>
+      <article>
+        <h3>GPS</h3>
+        <p>El error del GPS está correlado en el tiempo (≈ 1 m en horizontal, 2 m en vertical, τ ≈ 40 s); no es ruido blanco. Sin fix, FIX_FLAG = 0, SATS cae por debajo de 4 y LAT, LON y GPS_ALT se congelan en la última posición válida. Hay pérdidas en el despegue (más de 4 g), en el volteo de la expulsión y, durante el descenso, con una probabilidad que crece con la inclinación.</p>
+        <p class="eq">λ = λ0 · (1 + (θ/12°)²)</p>
+      </article>
+      <article>
+        <h3>Radio</h3>
+        <p>Las pérdidas llegan en ráfagas (modelo de Gilbert–Elliott) y empeoran dentro del cohete y con la lata en el suelo. PACKET_COUNT permite contarlas y las tramas corruptas se descartan porque no tienen 23 campos numéricos. La MicroSD guarda todas las tramas: es la fuente de la validación.</p>
+        <p class="eq">ocupación = bytes·10 / baudios · f</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="next" aria-labelledby="next-title">
+    <div class="section-head">
+      <h2 id="next-title">¿Por dónde seguimos?</h2>
+      <p>Dime cuál de estos frentes quieres atacar primero y lo desarrollamos a fondo.</p>
+    </div>
+    <ol class="next-list">
+      <li><span class="opt">a</span><div><h3>Generar las primeras tramas CSV de la caída</h3><p>Fijamos un dataset de referencia por semilla, documentamos cada campo para el jurado y preparamos el empaquetado en C++ con un búfer char[] de tamaño fijo.</p></div></li>
+      <li><span class="opt">b</span><div><h3>Construir el motor de física vertical paso a paso</h3><p>Deducimos la ecuación, comparamos Euler con RK4, estudiamos la sensibilidad a masa, Cd y área, y dimensionamos el paracaídas definitivo.</p></div></li>
+      <li><span class="opt">c</span><div><h3>Montar el parser de la estación de tierra</h3><p>Lectura del puerto serie real, validación de tramas, recuento de pérdidas con PACKET_COUNT, guardado en CSV y gráficas en vivo.</p></div></li>
+    </ol>
+  </section>
+
+  <footer class="foot">
+    <p>Coordenadas de rampa y campo magnético son aproximaciones de ejemplo para Sevilla; sustitúyelos por los del campo de lanzamiento y la calculadora WMM de NOAA. El ascenso del cohete es un perfil simplificado: la misión se valida en el descenso.</p>
+  </footer>
+</main>
+
+<script src="simulacion.js"></script>
+</body>
+</html>
