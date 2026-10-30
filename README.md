@@ -6,6 +6,8 @@ Banco de pruebas del software del CanSat (Desafío CanSat ESA, fase regional de 
 
 Abre `simulador/index.html` en el navegador. No necesita servidor ni conexión: si no hay internet, solo cambian las fuentes.
 
+`simulador/simulador-completo.html` es la misma página en un solo archivo, con el CSS y el JS incrustados. Se genera a partir de los tres archivos de abajo: si los cambias, vuelve a generarlo.
+
 | Archivo | Contenido |
 |---|---|
 | `simulador/index.html` | Estructura de la página: supuestos, controles, gráficas, validación y registro de tramas |
